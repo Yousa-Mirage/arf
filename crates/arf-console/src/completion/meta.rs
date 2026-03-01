@@ -83,8 +83,18 @@ const META_COMMANDS: &[MetaCommandDef] = &[
         takes_argument: false,
     },
     MetaCommandDef {
+        name: "restart!",
+        description: "Restart R session (skip confirmation)",
+        takes_argument: false,
+    },
+    MetaCommandDef {
         name: "switch",
         description: "Restart with different R version (requires rig)",
+        takes_argument: true,
+    },
+    MetaCommandDef {
+        name: "switch!",
+        description: "Restart with different R version, skip confirmation (requires rig)",
         takes_argument: true,
     },
     MetaCommandDef {
@@ -234,7 +244,8 @@ impl MetaCommandCompleter {
             (1, true) => {
                 // Command complete with trailing space - check for subcommands
                 let cmd = parts[0];
-                if cmd == "switch" {
+                // Strip `!` suffix so `:switch!` gets version completions like `:switch`
+                if cmd == "switch" || cmd == "switch!" {
                     // Complete with R versions from rig
                     self.complete_switch_versions(line, pos, leading_whitespace, "")
                 } else if cmd == "history" {
@@ -248,7 +259,7 @@ impl MetaCommandCompleter {
                 // Typing subcommand argument
                 let cmd = parts[0];
                 let partial = parts[1];
-                if cmd == "switch" {
+                if cmd == "switch" || cmd == "switch!" {
                     self.complete_switch_versions(line, pos, leading_whitespace, partial)
                 } else if cmd == "history" {
                     self.complete_history_subcommands(pos, partial)
@@ -496,7 +507,9 @@ mod tests {
         assert!(values.contains(&"commands"));
         assert!(values.contains(&"cmds"));
         assert!(values.contains(&"restart"));
+        assert!(values.contains(&"restart!"));
         assert!(values.contains(&"switch"));
+        assert!(values.contains(&"switch!"));
         assert!(values.contains(&"quit"));
         assert!(values.contains(&"exit"));
     }
@@ -911,6 +924,86 @@ mod tests {
         assert!(
             suggestions.iter().any(|s| s.value == "src/inner/"),
             "Should list src/inner/, got: {:?}",
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+    }
+
+    // --- :switch! / :restart! completion tests ---
+
+    #[test]
+    fn test_meta_command_switch_bang_appears_in_completions() {
+        let mut completer = MetaCommandCompleter::new();
+        // ":sw" should fuzzy match both "switch" and "switch!"
+        let suggestions = completer.complete(":sw", 3);
+        let values: Vec<&str> = suggestions.iter().map(|s| s.value.as_str()).collect();
+        assert!(values.contains(&"switch"), "should match :switch");
+        assert!(values.contains(&"switch!"), "should match :switch!");
+
+        // Both should append whitespace (they take arguments)
+        let switch_bang = suggestions.iter().find(|s| s.value == "switch!").unwrap();
+        assert!(
+            switch_bang.append_whitespace,
+            ":switch! should append whitespace because it takes an argument"
+        );
+    }
+
+    #[test]
+    fn test_meta_command_restart_bang_appears_in_completions() {
+        let mut completer = MetaCommandCompleter::new();
+        // ":restart" should fuzzy match both "restart" and "restart!"
+        let suggestions = completer.complete(":restart", 8);
+        let values: Vec<&str> = suggestions.iter().map(|s| s.value.as_str()).collect();
+        assert!(values.contains(&"restart"), "should match :restart");
+        assert!(values.contains(&"restart!"), "should match :restart!");
+
+        // restart! should NOT append whitespace (it takes no argument)
+        let restart_bang = suggestions.iter().find(|s| s.value == "restart!").unwrap();
+        assert!(
+            !restart_bang.append_whitespace,
+            ":restart! should NOT append whitespace"
+        );
+    }
+
+    #[test]
+    fn test_meta_command_switch_bang_subcommand_completion() {
+        // ":switch! " should enter the version completion branch (same as ":switch ")
+        // Without rig installed, both return empty, but the key thing is they take
+        // the same code path (not falling through to the default empty vec).
+        let mut completer = MetaCommandCompleter::new();
+        let switch_suggestions = completer.complete(":switch ", 8);
+        let switch_bang_suggestions = completer.complete(":switch! ", 9);
+        assert_eq!(
+            switch_suggestions.len(),
+            switch_bang_suggestions.len(),
+            ":switch! should produce the same version completions as :switch"
+        );
+
+        // Partial version input should also work
+        let switch_partial = completer.complete(":switch 4", 9);
+        let switch_bang_partial = completer.complete(":switch! 4", 10);
+        assert_eq!(
+            switch_partial.len(),
+            switch_bang_partial.len(),
+            ":switch! with partial version should match :switch"
+        );
+    }
+
+    #[test]
+    fn test_meta_command_switch_bang_no_subcommands_for_reprex() {
+        // ":reprex " should have no subcommands (no false match from strip_suffix)
+        let mut completer = MetaCommandCompleter::new();
+        let suggestions = completer.complete(":reprex ", 8);
+        assert!(suggestions.is_empty(), ":reprex should have no subcommands");
+    }
+
+    #[test]
+    fn test_meta_command_history_bang_no_subcommands() {
+        // ":history! " should NOT offer history subcommands (history! is not a valid command)
+        let mut completer = MetaCommandCompleter::new();
+        let suggestions = completer.complete(":history! ", 10);
+        assert!(
+            suggestions.is_empty(),
+            ":history! should not offer subcommands, got: {:?}",
             suggestions.iter().map(|s| &s.value).collect::<Vec<_>>()
         );
     }
