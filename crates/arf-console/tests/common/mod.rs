@@ -97,13 +97,19 @@ impl Terminal {
 
     /// Spawn arf with additional arguments.
     pub fn spawn_with_args(args: &[&str]) -> Result<Self, String> {
+        Self::spawn_with_size(args, DEFAULT_ROWS, DEFAULT_COLS)
+    }
+
+    /// Spawn arf with additional arguments and a custom terminal size.
+    pub fn spawn_with_size(args: &[&str], rows: u16, cols: u16) -> Result<Self, String> {
+        assert!(rows > 0 && cols > 0, "PTY size must be non-zero");
         let bin_path = env!("CARGO_BIN_EXE_arf");
 
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
-                rows: DEFAULT_ROWS,
-                cols: DEFAULT_COLS,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -145,7 +151,7 @@ impl Terminal {
             output_buffer: String::new(),
             running: true,
             screen: ScreenSnapshot {
-                lines: vec![String::new(); DEFAULT_ROWS as usize],
+                lines: vec![String::new(); rows as usize],
                 cursor_row: 0,
                 cursor_col: 0,
             },
@@ -191,8 +197,7 @@ impl Terminal {
             }
 
             let callbacks = CursorQueryDetector { query_tx };
-            let mut parser =
-                vt100::Parser::new_with_callbacks(DEFAULT_ROWS, DEFAULT_COLS, 0, callbacks);
+            let mut parser = vt100::Parser::new_with_callbacks(rows, cols, 0, callbacks);
 
             let mut buf = [0u8; 4096];
 
@@ -228,9 +233,8 @@ impl Terminal {
                             let (cursor_row, cursor_col) = screen.cursor_position();
                             state.screen.cursor_row = cursor_row;
                             state.screen.cursor_col = cursor_col;
-                            for row in 0..DEFAULT_ROWS {
-                                let row_content =
-                                    screen.contents_between(row, 0, row, DEFAULT_COLS - 1);
+                            for row in 0..rows {
+                                let row_content = screen.contents_between(row, 0, row, cols - 1);
                                 state.screen.lines[row as usize] = row_content;
                             }
                         }
