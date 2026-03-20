@@ -601,13 +601,23 @@ mod tests {
     /// Tests that dispatch_request rejects both evaluate and user_input
     /// in alternate mode.
     ///
-    /// Combined into a single test to avoid flakiness from parallel test
-    /// execution, since all tests share the global `IN_ALTERNATE_MODE` atomic.
+    /// Serialized with `#[serial]` because all tests that touch the global
+    /// `IN_ALTERNATE_MODE` / `R_IS_AT_PROMPT` atomics must not run concurrently.
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_dispatch_rejects_in_alternate_mode() {
         use super::super::protocol::R_NOT_AT_PROMPT;
 
+        /// Drop guard that resets global IPC state on scope exit (including panics).
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                super::super::set_in_alternate_mode(false);
+            }
+        }
+
         super::super::set_in_alternate_mode(true);
+        let _guard = Guard;
 
         // evaluate should be rejected
         let (tx, _rx) = mpsc::channel();
@@ -630,7 +640,6 @@ mod tests {
         let response = dispatch_request(request, &tx).await;
         assert_eq!(response.error.unwrap().code, R_NOT_AT_PROMPT);
 
-        // Cleanup
-        super::super::set_in_alternate_mode(false);
+        // Cleanup handled by Guard drop
     }
 }

@@ -209,10 +209,12 @@ fn test_pty_shell_mode_ctrl_c_exit() {
         .clear_and_expect("Shell mode enabled")
         .expect("Should show shell mode message");
 
-    // Press Ctrl+C to exit shell mode
+    // Clear buffer before sending Ctrl+C, then use expect to avoid a race
+    // where clear_and_expect's clear discards the already-arrived message.
+    terminal.clear_buffer().expect("Should clear buffer");
     terminal.send_interrupt().expect("Should send Ctrl+C");
     terminal
-        .clear_and_expect("Returned to R mode")
+        .expect("Returned to R mode")
         .expect("Should return to R mode");
 
     // Verify we're back in R mode
