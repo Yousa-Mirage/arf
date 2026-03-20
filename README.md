@@ -395,6 +395,10 @@ arf is built upon the broad Rust ecosystem and the remarkable efforts of those w
 
 - **[reedline](https://github.com/nushell/reedline)** — The line editor library from the Nushell project that powers arf's interactive editing.
 
+- **[mcp-repl](https://github.com/t-kalinowski/mcp-repl)** — The headless mode's pager redirection and graphics device configuration are based on mcp-repl's approach for non-interactive R sessions.
+
+- **[MCPRepl.jl](https://github.com/hexaeder/MCPRepl.jl)** / **[Kaimon.jl](https://github.com/kahliburke/Kaimon.jl)** — The IPC server design (shared REPL with agent code visibility, synchronous evaluation via backend queue) was heavily informed by these Julia MCP server implementations.
+
 ## License
 
 MIT
