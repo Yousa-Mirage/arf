@@ -453,7 +453,7 @@ async fn dispatch_request(
 
     // Reject immediately if in alternate mode (shell, history/help browser).
     // These modes block the main thread, so requests would hang in the mpsc
-    // queue until the 300s timeout.
+    // queue until the request timeout expires.
     if super::is_in_alternate_mode() {
         return JsonRpcResponse::error(
             id,
@@ -477,6 +477,7 @@ async fn dispatch_request(
             IpcMethod::Evaluate {
                 code: params.code,
                 visible: params.visible,
+                timeout_ms: params.timeout_ms,
             }
         }
         "shutdown" => {
@@ -517,6 +518,26 @@ async fn dispatch_request(
         }
     };
 
+    // Extract timeout from method (evaluate supports custom timeout).
+    // Clamp to a reasonable maximum to avoid overflowing Tokio's internal
+    // deadline computations or tying up the server task indefinitely.
+    const MAX_TIMEOUT_MS: u64 = 86_400_000; // 24 hours
+
+    let timeout = match &method {
+        IpcMethod::Evaluate { timeout_ms, .. } => match timeout_ms {
+            Some(ms) if *ms > MAX_TIMEOUT_MS => {
+                return JsonRpcResponse::error(
+                    id,
+                    INVALID_PARAMS,
+                    format!("timeout_ms too large (max {MAX_TIMEOUT_MS} ms, got {ms})"),
+                );
+            }
+            Some(ms) => std::time::Duration::from_millis(*ms),
+            None => super::DEFAULT_EVAL_TIMEOUT,
+        },
+        _ => super::DEFAULT_EVAL_TIMEOUT,
+    };
+
     // Send to main thread and await response
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let ipc_request = IpcRequest {
@@ -529,7 +550,7 @@ async fn dispatch_request(
     }
 
     // Wait for response from main thread (with timeout)
-    match tokio::time::timeout(std::time::Duration::from_secs(300), reply_rx).await {
+    match tokio::time::timeout(timeout, reply_rx).await {
         Ok(Ok(response)) => match response {
             IpcResponse::Evaluate(result) => {
                 JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
