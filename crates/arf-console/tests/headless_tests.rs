@@ -43,7 +43,12 @@ impl HeadlessProcess {
     /// Spawn `arf headless` with additional R flags and wait for IPC readiness.
     fn spawn_with_args(extra_args: &[&str]) -> Result<Self, String> {
         let bin_path = env!("CARGO_BIN_EXE_arf");
-        let quiet = extra_args.contains(&"--quiet");
+        // When --quiet is used, status messages are suppressed on stderr.
+        // When --log-file is used, stderr is redirected to the file, so the
+        // pipe is disconnected. In both cases, fall back to polling for readiness
+        // instead of monitoring stderr for the "IPC server listening" message.
+        let poll_for_readiness =
+            extra_args.contains(&"--quiet") || extra_args.contains(&"--log-file");
 
         let mut cmd = Command::new(bin_path);
         cmd.arg("headless");
@@ -69,7 +74,7 @@ impl HeadlessProcess {
         let shutdown_clone = Arc::clone(&shutdown);
         let shutdown_clone2 = Arc::clone(&shutdown);
 
-        // Channel to signal IPC readiness (used in non-quiet mode)
+        // Channel to signal IPC readiness (used when stderr is available)
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
         let mut ready_tx = Some(ready_tx);
 
@@ -119,8 +124,9 @@ impl HeadlessProcess {
         });
 
         // Wait for IPC readiness
-        if quiet {
-            // In quiet mode, stderr messages are suppressed. Probe readiness
+        if poll_for_readiness {
+            // Stderr readiness message is not available (suppressed in --quiet
+            // mode, or pipe disconnected in --log-file mode). Probe readiness
             // by running an actual RPC (`arf ipc eval "1"`) until it succeeds.
             // This ensures R is fully initialized and `set_r_at_prompt(true)`
             // has been called, unlike `ipc status` which only checks the
@@ -132,7 +138,7 @@ impl HeadlessProcess {
                     let _ = child.kill();
                     let server_stderr = stderr_output.lock().map(|s| s.clone()).unwrap_or_default();
                     return Err(format!(
-                        "Timeout waiting for IPC eval to succeed in quiet mode.\n\
+                        "Timeout waiting for IPC eval to succeed (polling mode).\n\
                          Server stderr:\n{server_stderr}\n\
                          Last probe error:\n{last_probe_err}"
                     ));
@@ -870,15 +876,22 @@ fn test_headless_log_file() {
     // The log file should exist (env_logger writes to it)
     assert!(log_path.exists(), "log file should exist at: {}", log_str);
 
-    // With RUST_LOG not set, the default level may not produce output.
-    // But the file should at least have been created by the append-open.
-    // If there IS content, it should look like log output (not status messages).
     let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
-    // Status messages (eprintln) should still go to stderr, not the log file
+
+    // In headless mode, stderr is redirected to the log file via dup2.
+    // Status messages (eprintln) should now appear in the log file.
     assert!(
-        !log_content.contains("Headless mode ready"),
-        "log file should not contain status messages: {}",
+        log_content.contains("Headless mode ready"),
+        "log file should contain status messages (stderr is redirected): {}",
         log_content
+    );
+
+    // stderr pipe should be empty (disconnected by dup2 redirect)
+    let stderr = process.stderr_output();
+    assert!(
+        stderr.trim().is_empty(),
+        "stderr pipe should be empty when --log-file redirects stderr, but got: {}",
+        stderr
     );
 }
 
