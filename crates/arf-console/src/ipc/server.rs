@@ -35,6 +35,7 @@ pub fn start_server(
     tx: mpsc::Sender<IpcRequest>,
     bind: Option<&str>,
     started_at: &str,
+    log_file: Option<String>,
 ) -> std::io::Result<String> {
     // Acquire the lock once and hold it through check-and-set to avoid TOCTOU.
     let handle_store = SERVER_HANDLE.get_or_init(|| Mutex::new(None));
@@ -114,6 +115,7 @@ pub fn start_server(
 
     let path = socket_path.clone();
     let started_at_owned = started_at.to_string();
+    let log_file_clone = log_file.clone();
     let cancel_token = CancellationToken::new();
     let token_clone = cancel_token.clone();
 
@@ -130,7 +132,15 @@ pub fn start_server(
                 .expect("Failed to create tokio runtime for IPC server");
 
             rt.block_on(async move {
-                if let Err(e) = run_server(&path, &started_at_owned, tx, token_clone, bind_tx).await
+                if let Err(e) = run_server(
+                    &path,
+                    &started_at_owned,
+                    log_file_clone,
+                    tx,
+                    token_clone,
+                    bind_tx,
+                )
+                .await
                 {
                     log::error!("IPC server error: {}", e);
                 }
@@ -191,6 +201,7 @@ pub fn start_server(
         r_version,
         cwd,
         started_at: started_at.to_string(),
+        log_file,
     };
 
     if let Err(e) = write_session(&session) {
@@ -267,6 +278,7 @@ fn get_socket_path(pid: u32) -> String {
 async fn run_server(
     socket_path: &str,
     started_at: &str,
+    log_file: Option<String>,
     tx: mpsc::Sender<IpcRequest>,
     cancel: CancellationToken,
     bind_tx: std::sync::mpsc::SyncSender<Result<(), std::io::Error>>,
@@ -295,7 +307,7 @@ async fn run_server(
             }
             // Cache session metadata BEFORE signalling bind success, so it
             // is guaranteed to be available when the first request arrives.
-            super::set_session_meta(socket_path.to_string(), started_at.to_string());
+            super::set_session_meta(socket_path.to_string(), started_at.to_string(), log_file);
             let _ = bind_tx.send(Ok(()));
             l
         }
@@ -339,6 +351,7 @@ async fn run_server(
 async fn run_server(
     socket_path: &str,
     started_at: &str,
+    log_file: Option<String>,
     tx: mpsc::Sender<IpcRequest>,
     cancel: CancellationToken,
     bind_tx: std::sync::mpsc::SyncSender<Result<(), std::io::Error>>,
@@ -353,7 +366,7 @@ async fn run_server(
         Ok(s) => {
             // Cache session metadata BEFORE signalling bind success, so it
             // is guaranteed to be available when the first request arrives.
-            super::set_session_meta(socket_path.to_string(), started_at.to_string());
+            super::set_session_meta(socket_path.to_string(), started_at.to_string(), log_file);
             let _ = bind_tx.send(Ok(()));
             s
         }
@@ -894,6 +907,40 @@ mod tests {
         assert!(
             result.r_unavailable_reason.is_some(),
             "should have r_unavailable_reason"
+        );
+    }
+
+    /// Tests that `log_file` in `SessionResult` reflects what was passed to `set_session_meta`.
+    #[test]
+    #[serial_test::serial]
+    fn test_session_result_includes_log_file() {
+        // With log_file set
+        super::super::set_session_meta(
+            "/tmp/test.sock".to_string(),
+            "2026-01-01T00:00:00+00:00".to_string(),
+            Some("/tmp/arf.log".to_string()),
+        );
+        let result = super::super::collect_session_result(false, "test");
+        assert_eq!(result.log_file.as_deref(), Some("/tmp/arf.log"));
+
+        // Without log_file
+        super::super::set_session_meta(
+            "/tmp/test.sock".to_string(),
+            "2026-01-01T00:00:00+00:00".to_string(),
+            None,
+        );
+        let result = super::super::collect_session_result(false, "test");
+        assert_eq!(result.log_file, None);
+
+        // Verify JSON serialization always includes the field
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(
+            json.get("log_file").is_some(),
+            "log_file field should always be present in JSON"
+        );
+        assert!(
+            json["log_file"].is_null(),
+            "log_file should be null when not configured"
         );
     }
 }

@@ -19,15 +19,42 @@ pub fn cmd_list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<8} {:<12} CWD", "PID", "R VERSION");
-    println!("{}", "-".repeat(60));
-    for session in &sessions {
+    let has_log = sessions.iter().any(|s| s.log_file.is_some());
+    if has_log {
+        // Compute column width from the longest log file path (minimum 8 for header).
+        let log_col = sessions
+            .iter()
+            .filter_map(|s| s.log_file.as_deref())
+            .map(|p| p.len())
+            .max()
+            .unwrap_or(0)
+            .max("LOG FILE".len())
+            + 2; // padding
         println!(
-            "{:<8} {:<12} {}",
-            session.pid,
-            session.r_version.as_deref().unwrap_or("?"),
-            session.cwd
+            "{:<8} {:<12} {:<log_col$} CWD",
+            "PID", "R VERSION", "LOG FILE"
         );
+        println!("{}", "-".repeat(8 + 12 + log_col + 20));
+        for session in &sessions {
+            println!(
+                "{:<8} {:<12} {:<log_col$} {}",
+                session.pid,
+                session.r_version.as_deref().unwrap_or("?"),
+                session.log_file.as_deref().unwrap_or("-"),
+                session.cwd
+            );
+        }
+    } else {
+        println!("{:<8} {:<12} CWD", "PID", "R VERSION");
+        println!("{}", "-".repeat(60));
+        for session in &sessions {
+            println!(
+                "{:<8} {:<12} {}",
+                session.pid,
+                session.r_version.as_deref().unwrap_or("?"),
+                session.cwd
+            );
+        }
     }
 
     Ok(())
@@ -210,6 +237,9 @@ pub fn cmd_status(pid: Option<u32>) -> Result<()> {
     println!("Socket:     {}", session.socket_path);
     println!("CWD:        {}", session.cwd);
     println!("Started:    {}", session.started_at);
+    if let Some(ref log_file) = session.log_file {
+        println!("Log file:   {log_file}");
+    }
 
     Ok(())
 }
