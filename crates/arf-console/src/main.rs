@@ -24,8 +24,47 @@ use config::{
     Config, ConfigLoadError, ConfigStatus, RSource, RSourceMode, RSourceStatus, config_file_path,
     ensure_directories, init_config, load_config, load_config_from_path, mask_home_path,
 };
+use ipc::session::SessionInfo;
 use repl::Repl;
+use serde::Serialize;
 use std::fs;
+
+/// JSON output for `arf headless --json`.
+///
+/// Contains session connection info and any warnings collected during startup.
+/// All keys are always present in the JSON output; `r_version` and `log_file`
+/// may be `null`. `warnings` is an array that may be empty.
+#[derive(Debug, Serialize)]
+struct HeadlessInfo {
+    pid: u32,
+    socket_path: String,
+    r_version: Option<String>,
+    cwd: String,
+    started_at: String,
+    log_file: Option<String>,
+    warnings: Vec<String>,
+}
+
+impl HeadlessInfo {
+    fn from_session(session: &SessionInfo, warnings: Vec<String>) -> Self {
+        // Normalize empty/whitespace-only R version to None so JSON shows null
+        let r_version = session
+            .r_version
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string());
+
+        Self {
+            pid: session.pid,
+            socket_path: session.socket_path.clone(),
+            r_version,
+            cwd: session.cwd.clone(),
+            started_at: session.started_at.clone(),
+            log_file: session.log_file.clone(),
+            warnings,
+        }
+    }
+}
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -272,6 +311,7 @@ fn run() -> Result<()> {
             bind,
             pid_file,
             quiet,
+            json,
             log_file,
             vanilla,
             no_environ,
@@ -302,6 +342,7 @@ fn run() -> Result<()> {
                 bind.as_deref(),
                 pid_file.as_deref(),
                 *quiet,
+                *json,
                 log_file.as_deref(),
             );
         }
@@ -419,8 +460,8 @@ fn run() -> Result<()> {
     // Start IPC server if requested
     if cli.with_ipc {
         match ipc::start_server(None, None) {
-            Ok(path) => {
-                log::info!("IPC server started on {}", path);
+            Ok(session) => {
+                log::info!("IPC server started on {}", session.socket_path);
             }
             Err(e) => {
                 eprintln!("Warning: Failed to start IPC server: {}", e);
@@ -513,6 +554,37 @@ fn load_config_or_warn(config_path: Option<&std::path::PathBuf>) -> Config {
     }
 }
 
+/// Load config, collecting warnings into a buffer instead of printing to stderr.
+///
+/// Used by `--json` mode to include config warnings in the JSON output.
+fn load_config_collecting_warnings(
+    config_path: Option<&std::path::PathBuf>,
+    warnings: &mut Vec<String>,
+) -> Config {
+    let result = if let Some(path) = config_path {
+        load_config_from_path(path)
+    } else {
+        load_config()
+    };
+    match result {
+        Ok(config) => config,
+        Err(e) => {
+            let (path_display, source_msg) = match &e {
+                ConfigLoadError::Read { path, source } => {
+                    (mask_home_path(path), source.to_string())
+                }
+                ConfigLoadError::Parse { path, source } => {
+                    (mask_home_path(path), source.to_string())
+                }
+            };
+            warnings.push(format!(
+                "Failed to load config from {path_display}: {source_msg}. Using default configuration."
+            ));
+            Config::default()
+        }
+    }
+}
+
 /// Run in headless mode: R + IPC server, no interactive REPL.
 ///
 /// Initializes R, starts the IPC server, and enters a polling loop.
@@ -527,15 +599,27 @@ fn run_headless(
     bind: Option<&str>,
     pid_file: Option<&std::path::Path>,
     quiet: bool,
+    json: bool,
     log_file: Option<&std::path::Path>,
 ) -> Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    // --json implies --quiet: suppress status messages on stderr since
+    // all relevant info is in the JSON output on stdout.
+    let quiet = quiet || json;
+
     log::info!("Starting arf in headless mode");
 
+    // Collect warnings for --json output instead of printing to stderr
+    let mut warnings: Vec<String> = Vec::new();
+
     // Load config for r_source resolution
-    let config = load_config_or_warn(config_path);
+    let config = if json {
+        load_config_collecting_warnings(config_path, &mut warnings)
+    } else {
+        load_config_or_warn(config_path)
+    };
 
     // Set up R
     setup_r(&config.startup.r_source, r_home, r_version)?;
@@ -584,9 +668,9 @@ fn run_headless(
             .display()
             .to_string()
     });
-    let ipc_path = ipc::start_server(bind, log_file_str).context("Failed to start IPC server")?;
+    let session = ipc::start_server(bind, log_file_str).context("Failed to start IPC server")?;
     if !quiet {
-        eprintln!("IPC server listening on: {}", ipc_path);
+        eprintln!("IPC server listening on: {}", session.socket_path);
     }
 
     // Write PID file if requested
@@ -616,7 +700,26 @@ fn run_headless(
     // Mark R as ready for IPC requests
     ipc::set_r_at_prompt(true);
 
-    if !quiet {
+    if json {
+        // Output session info as JSON to stdout
+        let output = HeadlessInfo::from_session(&session, warnings);
+        let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+        let json_str = if is_tty {
+            serde_json::to_string_pretty(&output)
+        } else {
+            serde_json::to_string(&output)
+        }
+        .context("Failed to serialize session info")?;
+        // Use writeln + flush instead of println to ensure the JSON is
+        // delivered immediately when stdout is piped (non-TTY). This is the
+        // readiness signal for CI scripts waiting on the output.
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{json_str}").context("Failed to write session info to stdout")?;
+        stdout
+            .flush()
+            .context("Failed to flush session info to stdout")?;
+    } else if !quiet {
         eprintln!("Headless mode ready. Press Ctrl+C to exit.");
     }
 
