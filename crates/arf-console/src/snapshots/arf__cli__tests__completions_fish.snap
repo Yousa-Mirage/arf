@@ -123,7 +123,7 @@ complete -c arf -n "__fish_arf_using_subcommand ipc; and not __fish_seen_subcomm
 complete -c arf -n "__fish_arf_using_subcommand ipc; and not __fish_seen_subcommand_from list eval send status session shutdown help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from list" -s h -l help -d 'Print help'
 complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from eval" -l pid -d 'PID of the target arf session (optional if only one session is running)' -r
-complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from eval" -l timeout -d 'Timeout in milliseconds (default: 300000 = 5 minutes)' -r
+complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from eval" -l timeout -d 'Timeout in milliseconds for waiting for the response (default: 300000 = 5 minutes). This does NOT cancel the R evaluation — long-running code keeps R busy after timeout' -r
 complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from eval" -l visible -d 'Also show output in the session (REPL or headless stdout)'
 complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from eval" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_from send" -l pid -d 'PID of the target arf session (optional if only one session is running)' -r
@@ -144,7 +144,7 @@ complete -c arf -n "__fish_arf_using_subcommand ipc; and __fish_seen_subcommand_
 complete -c arf -n "__fish_arf_using_subcommand headless" -s c -l config -d 'Path to configuration file' -r -F
 complete -c arf -n "__fish_arf_using_subcommand headless" -l with-r-version -d 'R version to use via rig (overrides r_source config)' -r
 complete -c arf -n "__fish_arf_using_subcommand headless" -l r-home -d 'Explicit R_HOME path (overrides r_source config)' -r -f -a "(__fish_complete_directories)"
-complete -c arf -n "__fish_arf_using_subcommand headless" -l bind -d 'Bind IPC socket to a specific path instead of the default' -r -F
+complete -c arf -n "__fish_arf_using_subcommand headless" -l bind -d 'Bind IPC socket to a specific path instead of the default. On Unix, ensure the parent directory is user-private (mode 0700) to avoid a brief permission window before the socket is restricted' -r -F
 complete -c arf -n "__fish_arf_using_subcommand headless" -l pid-file -d 'Write server PID to a file (removed on shutdown)' -r -F
 complete -c arf -n "__fish_arf_using_subcommand headless" -l log-file -d 'Redirect log output to a file instead of stderr' -r -F
 complete -c arf -n "__fish_arf_using_subcommand headless" -l max-connections -d '[R] Set max number of connections to N' -r

@@ -251,6 +251,7 @@ pub enum Commands {
 Examples:
   Start headless and evaluate R code:
     $ arf headless &
+    # (wait for the server to be ready)
     $ arf ipc eval '1 + 1'
 
   CI usage with JSON output:
@@ -278,7 +279,9 @@ Examples:
         #[arg(long = "r-home", value_hint = ValueHint::DirPath, conflicts_with = "r_version")]
         r_home: Option<PathBuf>,
 
-        /// Bind IPC socket to a specific path instead of the default
+        /// Bind IPC socket to a specific path instead of the default.
+        /// On Unix, ensure the parent directory is user-private (mode 0700)
+        /// to avoid a brief permission window before the socket is restricted.
         ///
         /// Unix: filesystem path (e.g. /tmp/my-arf.sock)
         /// Windows: named pipe path (e.g. \\.\pipe\my-arf)
@@ -369,7 +372,8 @@ Examples:
         /// Also show output in the session (REPL or headless stdout)
         #[arg(long)]
         visible: bool,
-        /// Timeout in milliseconds (default: 300000 = 5 minutes)
+        /// Timeout in milliseconds for waiting for the response (default: 300000 = 5 minutes).
+        /// This does NOT cancel the R evaluation — long-running code keeps R busy after timeout.
         #[arg(long)]
         timeout: Option<u64>,
     },
