@@ -84,6 +84,63 @@ Headless mode automatically configures R for non-interactive use:
 
 All `arf ipc` subcommands connect to a running arf session. If only one session is active, it is used automatically. When multiple sessions are running, use `--pid` to target a specific one.
 
+### Output Format
+
+All IPC action subcommands (`list`, `eval`, `send`, `session`, `shutdown`, `history`) output JSON to stdout. Output is pretty-printed when stdout is a terminal, compact when piped. Errors are written to stderr as structured JSON:
+
+```json
+{
+  "error": {
+    "code": "R_BUSY",
+    "message": "R is busy",
+    "hint": "R is executing code. Wait for it to finish, or use 'arf ipc session' to check status.",
+    "data": null
+  }
+}
+```
+
+All four fields (`code`, `message`, `hint`, `data`) are always present. `hint` is `null` when no hint is available. `data` contains additional structured information (e.g. `{"buffer": "..."}` for `USER_IS_TYPING`) or `null`.
+
+The `code` field is a string identifier for stable matching. Process exit codes indicate the error category:
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 2 | IPC transport error (socket/pipe connection failed, connection-level read timeout) |
+| 3 | Session resolution error (no session found, ambiguous PID) |
+| 4 | JSON-RPC protocol error (R busy, user typing, server-side request timeout from `--timeout`, etc.) |
+
+> **Note:** Transport-level timeouts (failing to connect to the socket or low-level read/write timeouts) produce exit code **2** (`TRANSPORT_ERROR`). Server-side evaluation timeouts triggered by `arf ipc eval --timeout` result in a JSON-RPC error response from the server, which the client reports as exit code **4**.
+
+Error code strings:
+
+| Code | Exit | Description |
+|------|------|-------------|
+| `TRANSPORT_ERROR` | 2 | Socket/pipe connection failed, connection-level read timeout, etc. |
+| `SESSION_NOT_FOUND` | 3 | No session with the specified PID, or no sessions at all |
+| `SESSION_AMBIGUOUS` | 3 | Multiple sessions running and `--pid` not specified |
+| `R_BUSY` | 4 | R is executing code |
+| `R_NOT_AT_PROMPT` | 4 | R is in browser/menu mode |
+| `INPUT_ALREADY_PENDING` | 4 | Another IPC request is already queued |
+| `USER_IS_TYPING` | 4 | User is typing in the REPL (see `data` fields below) |
+| `EMPTY_RESPONSE` | 4 | Server returned no result |
+| `PARSE_ERROR` | 4 | Invalid JSON in request |
+| `INVALID_REQUEST` | 4 | Not a valid JSON-RPC request |
+| `METHOD_NOT_FOUND` | 4 | Unknown method name |
+| `INVALID_PARAMS` | 4 | Invalid method parameters |
+| `INTERNAL_ERROR` | 4 | Server internal error |
+| `PROTOCOL_ERROR` | 4 | Other JSON-RPC error |
+
+#### `USER_IS_TYPING` error data
+
+When the user is typing in the REPL, the `data` field contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `buffer` | string | Current editor buffer content (capped at 1024 characters) |
+| `buffer_truncated` | boolean | `true` if the buffer was truncated |
+| `buffer_original_length` | integer | Full character count of the original buffer |
+
 ### `arf ipc eval` — Evaluate R Code
 
 Evaluates R code and returns the captured output. The code runs silently by default — output is not shown in the session.
@@ -111,7 +168,29 @@ arf ipc eval --pid 12345 'getwd()'
 | `--timeout <MS>` | Timeout in milliseconds (default: 300000 = 5 minutes) |
 | `--pid <PID>` | Target session PID |
 
-**Output format:** stdout contains the captured stdout plus the printed value. stderr contains the captured stderr (warnings/messages) and errors, and is printed whenever non-empty. Exit code is non-zero on R errors.
+**Output format:** JSON object with `stdout` (string), `stderr` (string), `value` (string or null), and `error` (string or null). All four fields are always present. In silent mode (the default), the printed result appears in the `value` field rather than `stdout`. R evaluation errors are included in the `error` field with exit code 0 — they are a normal response, not an IPC failure.
+
+Example (silent eval, result captured in `value`):
+
+```json
+{
+  "stdout": "",
+  "stderr": "",
+  "value": "[1] 2",
+  "error": null
+}
+```
+
+Example (R error):
+
+```json
+{
+  "stdout": "",
+  "stderr": "",
+  "value": null,
+  "error": "object 'x' not found"
+}
+```
 
 ### `arf ipc send` — Send User Input
 
@@ -124,6 +203,8 @@ arf ipc send 'library(dplyr)'
 # Target a specific session
 arf ipc send --pid 12345 'print(mtcars)'
 ```
+
+**Output format:** JSON object with `accepted` (bool). Example: `{"accepted": true}`
 
 **When to use `eval` vs `send`:**
 
@@ -186,20 +267,28 @@ When R is idle, the `r` field contains session details (other top-level fields o
 
 ### `arf ipc list` — List Active Sessions
 
-Shows all running arf sessions with IPC enabled.
+Returns all running arf sessions with IPC enabled as JSON.
 
 ```sh
 arf ipc list
+
+# Example output:
+# {
+#   "sessions": [
+#     {
+#       "pid": 12345,
+#       "r_version": "4.4.1",
+#       "socket_path": "/home/user/.cache/arf/sessions/12345.sock",
+#       "cwd": "/workspace",
+#       "started_at": "2026-03-22T10:00:00+09:00",
+#       "log_file": null,
+#       "history_session_id": 1742601600000000000
+#     }
+#   ]
+# }
 ```
 
-### `arf ipc status` — Show Session Status
-
-Displays human-readable status of a running session (PID, R version, socket path, etc.).
-
-```sh
-arf ipc status
-arf ipc status --pid 12345
-```
+When no sessions are running, returns `{"sessions": []}` (exit 0).
 
 ### `arf ipc history` — Query Command History
 
@@ -242,7 +331,7 @@ arf ipc history | jq -r '.entries[].command'
 | `--since <DATE>` | Only return entries after this timestamp (RFC 3339 or `YYYY-MM-DD`) |
 | `--pid <PID>` | Target session PID |
 
-**Output format:** JSON object with `entries` array (newest first) and `session_id`. Each entry contains `command`, `timestamp`, `cwd`, `exit_status`, and `session_id` (optional fields are omitted when null). Output is pretty-printed when stdout is a terminal, compact when piped.
+**Output format:** JSON object with `entries` array (newest first) and `session_id`. Each entry contains `command`, `timestamp`, `cwd`, `exit_status`, and `session_id` (all fields are always present; null when not available). Output is pretty-printed when stdout is a terminal, compact when piped.
 
 > [!NOTE]
 > Only completed commands are recorded in the history database. A command that is currently executing will not appear in the results until it finishes.
@@ -255,6 +344,8 @@ Sends a graceful shutdown request to a headless session. The session cleans up (
 arf ipc shutdown
 arf ipc shutdown --pid 12345
 ```
+
+**Output format:** JSON object with `accepted` (bool). Example: `{"accepted": true}`
 
 ## IPC in Interactive REPL
 
@@ -287,6 +378,7 @@ When both a human and an external tool use the same session, arf prevents confli
 - If R is not at the prompt, `user_input` / `send` requests are rejected with `R_NOT_AT_PROMPT`
 - Clients are expected to handle these errors by retrying later (for example, with backoff). In interactive/REPL mode, the server accepts at most one pending request — additional requests are rejected with `INPUT_ALREADY_PENDING`. In headless mode, requests are queued and processed sequentially
 - The `session` and `history` methods do not touch R and can be called even when R is busy or not at the prompt. `session` always succeeds; `history` may fail if history is disabled or the history database cannot be accessed
+- `list` reads local session files and does not connect to any server, so it always works regardless of R state
 
 ## Transport & Security
 

@@ -18,6 +18,17 @@ use std::time::Duration;
 /// Timeout for waiting for IPC server to start.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Parse JSON from an IPC output, including stdout/stderr in the panic
+/// message on failure for easier debugging.
+fn parse_ipc_json(output: &IpcOutput) -> serde_json::Value {
+    serde_json::from_str(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "failed to parse JSON: {e}\nstdout: {}\nstderr: {}",
+            output.stdout, output.stderr
+        )
+    })
+}
+
 /// Wrapper around a headless arf process.
 ///
 /// Spawns `arf headless` and waits for IPC readiness by monitoring
@@ -212,6 +223,7 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -235,6 +247,7 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -259,6 +272,7 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -275,22 +289,24 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
-    /// Run `arf ipc status --pid <pid>` and return output.
-    fn ipc_status(&self) -> Result<IpcOutput, String> {
+    /// Run `arf ipc session --pid <pid>` and return output.
+    fn ipc_session(&self) -> Result<IpcOutput, String> {
         let bin_path = env!("CARGO_BIN_EXE_arf");
 
         let output = Command::new(bin_path)
-            .args(["ipc", "status", "--pid", &self.pid.to_string()])
+            .args(["ipc", "session", "--pid", &self.pid.to_string()])
             .output()
-            .map_err(|e| format!("Failed to run arf ipc status: {e}"))?;
+            .map_err(|e| format!("Failed to run arf ipc session: {e}"))?;
 
         Ok(IpcOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -311,6 +327,7 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -327,6 +344,7 @@ impl HeadlessProcess {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
+            exit_code: output.status.code(),
         })
     }
 
@@ -384,6 +402,7 @@ struct IpcOutput {
     stdout: String,
     stderr: String,
     success: bool,
+    exit_code: Option<i32>,
 }
 
 // ===========================================================================
@@ -395,17 +414,17 @@ struct IpcOutput {
 fn test_headless_starts_and_ipc_ready() {
     let process = HeadlessProcess::spawn().expect("Failed to spawn headless");
 
-    let result = process.ipc_status().expect("ipc status should run");
+    let result = process.ipc_session().expect("ipc session should run");
     assert!(
         result.success,
-        "ipc status should succeed. stdout: {}, stderr: {}",
+        "ipc session should succeed. stdout: {}, stderr: {}",
         result.stdout, result.stderr
     );
-    assert!(
-        result
-            .stdout
-            .contains(&format!("PID:        {}", process.pid)),
-        "status should show correct PID: {}",
+    let json = parse_ipc_json(&result);
+    assert_eq!(
+        json["pid"].as_u64(),
+        Some(process.pid as u64),
+        "session should show correct PID: {}",
         result.stdout
     );
 }
@@ -448,7 +467,7 @@ fn test_headless_eval_stdout() {
     );
 }
 
-/// Test that `arf ipc eval` reports R errors.
+/// Test that `arf ipc eval` reports R errors in the JSON response.
 #[test]
 fn test_headless_eval_error() {
     let process = HeadlessProcess::spawn().expect("Failed to spawn headless");
@@ -456,16 +475,19 @@ fn test_headless_eval_error() {
     let result = process
         .ipc_eval("stop('headless_error')")
         .expect("eval should run");
-    // The CLI exits with non-zero on R errors
+    // R errors are returned as part of the JSON response (exit 0)
     assert!(
-        !result.success,
-        "eval should fail on R error. stdout: {}",
-        result.stdout
-    );
-    assert!(
-        result.stderr.contains("headless_error"),
-        "should report error message: {}",
+        result.success,
+        "eval should succeed (R errors are in JSON, not exit code). stderr: {}",
         result.stderr
+    );
+    let json = parse_ipc_json(&result);
+    assert!(
+        json["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("headless_error")),
+        "should report error in JSON: {}",
+        result.stdout
     );
 }
 
@@ -522,8 +544,10 @@ fn test_headless_user_input() {
         "send should succeed. stderr: {}",
         result.stderr
     );
-    assert!(
-        result.stdout.contains("Input accepted"),
+    let json = parse_ipc_json(&result);
+    assert_eq!(
+        json["accepted"].as_bool(),
+        Some(true),
         "should report acceptance: {}",
         result.stdout
     );
@@ -671,8 +695,8 @@ fn test_headless_shutdown_via_ipc() {
     let mut process = HeadlessProcess::spawn().expect("Failed to spawn headless");
 
     // Verify it's running
-    let status = process.ipc_status().expect("status should work");
-    assert!(status.success, "should be running");
+    let session = process.ipc_session().expect("session should work");
+    assert!(session.success, "should be running");
 
     // Send shutdown
     let result = process.ipc_shutdown().expect("shutdown should run");
@@ -681,8 +705,10 @@ fn test_headless_shutdown_via_ipc() {
         "shutdown should succeed. stderr: {}",
         result.stderr
     );
-    assert!(
-        result.stdout.contains("Shutdown request accepted"),
+    let json = parse_ipc_json(&result);
+    assert_eq!(
+        json["accepted"].as_bool(),
+        Some(true),
         "should report acceptance: {}",
         result.stdout
     );
@@ -1009,11 +1035,11 @@ fn test_headless_history_persistence() {
     let r1 = process.ipc_eval("1 + 1").expect("eval should run");
     assert!(r1.success, "first eval should succeed");
 
-    // Run a command that errors
+    // Run a command that errors (R errors are returned in JSON, exit 0)
     let r2 = process
         .ipc_eval("stop('test_error')")
         .expect("error eval should run");
-    assert!(!r2.success, "error eval should fail");
+    assert!(r2.success, "eval should succeed (R error is in JSON)");
 
     // Run a send (user_input) command
     let r3 = process
@@ -1204,7 +1230,7 @@ fn test_ipc_history_basic() {
     let result = process.ipc_history(&[]).expect("history query");
     assert!(result.success, "history should succeed: {}", result.stderr);
 
-    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("parse history JSON");
+    let json = parse_ipc_json(&result);
     let entries = json["entries"].as_array().expect("entries should be array");
 
     // Should contain both commands (newest first)
@@ -1259,7 +1285,7 @@ fn test_ipc_history_limit() {
         .expect("history query");
     assert!(result.success);
 
-    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("parse JSON");
+    let json = parse_ipc_json(&result);
     let entries = json["entries"].as_array().expect("entries array");
     assert_eq!(entries.len(), 2, "should return exactly 2 entries: {json}");
 }
@@ -1288,7 +1314,7 @@ fn test_ipc_history_grep() {
         .expect("history grep");
     assert!(result.success);
 
-    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("parse JSON");
+    let json = parse_ipc_json(&result);
     let entries = json["entries"].as_array().expect("entries array");
 
     let commands: Vec<&str> = entries
@@ -1326,7 +1352,7 @@ fn test_ipc_history_default_session_scoped() {
     let result = process.ipc_history(&[]).expect("history default");
     assert!(result.success);
 
-    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("parse JSON");
+    let json = parse_ipc_json(&result);
     let entries = json["entries"].as_array().expect("entries array");
     assert!(
         !entries.is_empty(),
@@ -1356,14 +1382,14 @@ fn test_ipc_history_metadata() {
     let r1 = process.ipc_eval("1 + 1").expect("eval success");
     assert!(r1.success);
     let r2 = process.ipc_eval("stop('oops')").expect("eval error");
-    assert!(!r2.success);
+    assert!(r2.success, "eval should succeed (R error is in JSON)");
 
     std::thread::sleep(Duration::from_millis(200));
 
     let result = process.ipc_history(&[]).expect("history query");
     assert!(result.success);
 
-    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("parse JSON");
+    let json = parse_ipc_json(&result);
     let entries = json["entries"].as_array().expect("entries array");
 
     let success_entry = entries
@@ -1410,5 +1436,83 @@ fn test_ipc_history_disabled() {
         !result.success,
         "history should fail when disabled: stdout={}, stderr={}",
         result.stdout, result.stderr
+    );
+}
+
+// ── Exit code and structured error tests ─────────────────────────────
+
+/// Test that `arf ipc eval --pid <wrong>` exits with code 3 (SESSION_NOT_FOUND)
+/// and produces structured JSON error on stderr.
+#[test]
+fn test_ipc_exit_code_session_not_found() {
+    let bin_path = env!("CARGO_BIN_EXE_arf");
+
+    // Derive a PID unlikely to match any running arf session.
+    let fake_pid = std::process::id().saturating_add(900_000).to_string();
+
+    let output = Command::new(bin_path)
+        .args(["ipc", "eval", "1", "--pid", &fake_pid])
+        .output()
+        .expect("should run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "exit code should be 3 (session)"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let json: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr should be JSON: {e}\nstderr: {stderr}"));
+    assert_eq!(json["error"]["code"].as_str(), Some("SESSION_NOT_FOUND"));
+    assert!(json["error"]["message"].as_str().is_some());
+    assert!(json["error"]["hint"].as_str().is_some());
+}
+
+/// Test that `arf ipc list` outputs valid JSON even with no sessions.
+#[test]
+fn test_ipc_list_empty_json() {
+    // This test runs without a headless process, so list should return
+    // an empty sessions array (or whatever sessions are running).
+    let bin_path = env!("CARGO_BIN_EXE_arf");
+    let output = Command::new(bin_path)
+        .args(["ipc", "list"])
+        .output()
+        .expect("should run");
+
+    assert!(output.status.success(), "list should always succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout should be JSON: {e}\nstdout: {stdout}"));
+    assert!(json["sessions"].is_array(), "should have sessions array");
+}
+
+/// Test that protocol errors (e.g. timeout) produce exit code 4 and
+/// structured JSON error on stderr.
+#[test]
+fn test_ipc_exit_code_protocol_error() {
+    let process = HeadlessProcess::spawn().expect("spawn headless");
+
+    // Use a very short timeout to trigger a protocol-level timeout error
+    let result = process
+        .ipc_eval_with_timeout("Sys.sleep(10)", 500)
+        .expect("eval should run");
+
+    assert!(!result.success, "should fail due to timeout");
+    assert_eq!(
+        result.exit_code,
+        Some(4),
+        "exit code should be 4 (protocol)"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&result.stderr)
+        .unwrap_or_else(|e| panic!("stderr should be JSON: {e}\nstderr: {}", result.stderr));
+    assert!(
+        json["error"]["code"].as_str().is_some(),
+        "should have string error code"
+    );
+    assert!(
+        json["error"]["message"].as_str().is_some(),
+        "should have message"
     );
 }

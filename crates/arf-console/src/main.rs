@@ -306,7 +306,8 @@ fn run() -> Result<()> {
             return handle_history_command(action, cli.config.as_ref(), cli.history_dir.as_ref());
         }
         Some(Commands::Ipc { action }) => {
-            return handle_ipc_command(action);
+            handle_ipc_command(action);
+            return Ok(());
         }
         Some(Commands::Headless {
             config,
@@ -995,7 +996,7 @@ fn handle_history_command(
     }
 }
 
-fn handle_ipc_command(action: &IpcAction) -> Result<()> {
+fn handle_ipc_command(action: &IpcAction) {
     match action {
         IpcAction::List => ipc::client::cmd_list(),
         IpcAction::Eval {
@@ -1005,7 +1006,6 @@ fn handle_ipc_command(action: &IpcAction) -> Result<()> {
             timeout,
         } => ipc::client::cmd_eval(code, *pid, *visible, *timeout),
         IpcAction::Send { code, pid } => ipc::client::cmd_send(code, *pid),
-        IpcAction::Status { pid } => ipc::client::cmd_status(*pid),
         IpcAction::Shutdown { pid } => ipc::client::cmd_shutdown(*pid),
         IpcAction::Session { pid } => ipc::client::cmd_session(*pid),
         IpcAction::History {

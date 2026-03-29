@@ -237,6 +237,26 @@ pub enum Commands {
     /// Evaluate R code, send user input, or query session info in a running
     /// arf instance. The target session must have IPC enabled — via
     /// `arf headless`, `arf --with-ipc`, or the `:ipc start` meta command.
+    #[command(after_long_help = "\
+Quick start:
+  # 1. Start a headless session (or use --with-ipc with the REPL)
+  $ arf headless &
+
+  # 2. Check the session is running
+  $ arf ipc list
+
+  # 3. Evaluate R code and get structured JSON output
+  $ arf ipc eval '1 + 1'
+
+  # 4. Check session status (R version, loaded packages, etc.)
+  $ arf ipc session
+
+  # 5. Shut down when done
+  $ arf ipc shutdown
+
+All commands output JSON to stdout (pretty-printed on terminal, compact \
+when piped). Errors are written to stderr as JSON. Exit codes: \
+0 = success, 2 = transport error, 3 = session error, 4 = protocol error.")]
     Ipc {
         #[command(subcommand)]
         action: IpcAction,
@@ -367,12 +387,29 @@ Examples:
 
 #[derive(Subcommand, Debug)]
 pub enum IpcAction {
-    /// List active arf sessions
-    List,
-    /// Evaluate R code in a running session (output captured, use --visible to also show in session)
+    /// List active arf sessions as JSON
+    ///
+    /// Returns a JSON object with a `sessions` array. Each entry contains
+    /// pid, r_version, socket_path, cwd, started_at, log_file, and history_session_id.
+    /// Returns `{"sessions": []}` when no sessions are running (exit 0).
     #[command(after_long_help = "\
 Examples:
-  Evaluate an expression and print the result:
+  List all sessions:
+    $ arf ipc list
+
+  Extract PIDs with jq:
+    $ arf ipc list | jq '.sessions[].pid'")]
+    List,
+    /// Evaluate R code and return captured output as JSON
+    ///
+    /// Returns a JSON object with stdout, stderr, value, and error fields.
+    /// All fields are always present (null when not applicable). In silent
+    /// mode (the default), the printed result appears in value rather than
+    /// stdout. R evaluation errors are included in the error field with
+    /// exit code 0 — they are a normal response, not an IPC failure.
+    #[command(after_long_help = "\
+Examples:
+  Evaluate an expression:
     $ arf ipc eval '1 + 1'
 
   Run code with a 10-second timeout:
@@ -382,7 +419,10 @@ Examples:
     $ arf ipc eval --visible 'cat(\"hello\\n\")'
 
   Target a specific session when multiple are running:
-    $ arf ipc eval --pid 12345 'getwd()'")]
+    $ arf ipc eval --pid 12345 'getwd()'
+
+  Extract the value with jq:
+    $ arf ipc eval '1 + 1' | jq -r '.value'")]
     Eval {
         /// R code to evaluate
         code: String,
@@ -402,8 +442,7 @@ Examples:
     /// Unlike `eval`, the code is executed as if the user typed it at the
     /// prompt. Output goes to the session's output streams (the REPL
     /// terminal or headless stdout/log file) and is not captured in the
-    /// IPC response. Use this when you want the output to be visible in
-    /// the session rather than programmatically captured.
+    /// IPC response. Returns JSON `{"accepted": true}` on success.
     #[command(after_long_help = "\
 Examples:
   Send code that appears in the session output:
@@ -414,12 +453,6 @@ Examples:
     Send {
         /// R code to send
         code: String,
-        /// PID of the target arf session (optional if only one session is running)
-        #[arg(long)]
-        pid: Option<u32>,
-    },
-    /// Show status of a running arf session
-    Status {
         /// PID of the target arf session (optional if only one session is running)
         #[arg(long)]
         pid: Option<u32>,
@@ -456,7 +489,7 @@ Examples:
         #[arg(long)]
         pid: Option<u32>,
     },
-    /// Shut down a running arf headless session
+    /// Shut down a running arf headless session (returns JSON `{"accepted": true}`)
     #[command(after_long_help = "\
 Examples:
   Shut down the only running session:

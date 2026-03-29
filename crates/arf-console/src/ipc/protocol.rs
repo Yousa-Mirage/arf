@@ -86,13 +86,14 @@ pub struct EvaluateParams {
 }
 
 /// Result of the `evaluate` method.
+///
+/// All fields are always present. `value` and `error` are `null` when not
+/// applicable, ensuring a fixed JSON schema for predictable parsing.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EvaluateResult {
     pub stdout: String,
     pub stderr: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -180,25 +181,25 @@ fn default_history_limit() -> i64 {
 }
 
 /// A single history entry returned by the `history` method.
+///
+/// All fields are always present. Optional fields are `null` when not
+/// available (e.g. entries from older history databases without timestamps).
 #[derive(Debug, Serialize)]
 pub struct HistoryEntry {
     pub command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_status: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<i64>,
 }
 
 /// Result of the `history` method.
+///
+/// All fields are always present. `session_id` is `null` when history is
+/// disabled or no session ID is available.
 #[derive(Debug, Serialize)]
 pub struct HistoryResult {
     pub entries: Vec<HistoryEntry>,
-    /// Current session ID, if available.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<i64>,
 }
 
@@ -227,5 +228,30 @@ pub enum IpcResponse {
     Evaluate(EvaluateResult),
     UserInput(UserInputResult),
     Session(Box<SessionResult>),
-    Error { code: i32, message: String },
+    Error {
+        code: i32,
+        message: String,
+        /// Optional structured data for the JSON-RPC error `data` field.
+        data: Option<serde_json::Value>,
+    },
+}
+
+impl IpcResponse {
+    /// Create an error response without additional data.
+    pub fn error(code: i32, message: String) -> Self {
+        Self::Error {
+            code,
+            message,
+            data: None,
+        }
+    }
+
+    /// Create an error response with additional structured data.
+    pub fn error_with_data(code: i32, message: String, data: serde_json::Value) -> Self {
+        Self::Error {
+            code,
+            message,
+            data: Some(data),
+        }
+    }
 }
