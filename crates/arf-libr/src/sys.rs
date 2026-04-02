@@ -7,6 +7,12 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+/// Pointer to R's interrupt pending flag, set during R initialization.
+/// - Unix: points to `R_interrupts_pending` (c_int)
+/// - Windows: points to `UserBreak` (Rboolean, c_int-sized)
+static R_INTERRUPT_FLAG: AtomicPtr<c_int> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Default R library paths by platform.
 #[cfg(target_os = "linux")]
@@ -773,9 +779,16 @@ unsafe fn initialize_r_unix(lib: &crate::functions::RLibrary, r_args: &[&str]) -
             *lib.r_running_as_main_program = 1;
         }
 
-        // Disable R's signal handlers before initialization
+        // Disable R's signal handlers before initialization.
+        // R's mainloop reinstalls its own SIGINT handler later;
+        // on Windows we install a separate Ctrl+C handler in the REPL.
         if !lib.r_signalhandlers.is_null() {
             *lib.r_signalhandlers = 0;
+        }
+
+        // Store the interrupt flag pointer for use by the Ctrl+C handler
+        if !lib.r_interrupts_pending.is_null() {
+            R_INTERRUPT_FLAG.store(lib.r_interrupts_pending, Ordering::Release);
         }
 
         // Prepare arguments for R initialization
@@ -894,9 +907,15 @@ unsafe fn initialize_r_windows(lib: &crate::functions::RLibrary, r_args: &[&str]
         .map_err(|_| crate::error::RError::LibraryNotFound("Invalid user home path".to_string()))?;
 
     unsafe {
-        // Disable R's signal handlers first
+        // Disable R's signal handlers first.
+        // We install our own Ctrl+C handler that sets UserBreak in the REPL.
         if !lib.r_signalhandlers.is_null() {
             *lib.r_signalhandlers = 0;
+        }
+
+        // Store the interrupt flag pointer for use by the Ctrl+C handler
+        if !lib.user_break.is_null() {
+            R_INTERRUPT_FLAG.store(lib.user_break, Ordering::Release);
         }
 
         // Step 1: Call cmdlineoptions with empty args (ark pattern)
@@ -1437,6 +1456,11 @@ unsafe extern "C" fn r_read_console(
     // Stop the spinner when a new prompt is displayed
     // This handles cases where R finishes evaluation without producing output
     stop_spinner();
+
+    // Clear any pending interrupt flag at the start of every ReadConsole
+    // invocation (including nested prompts such as readline(), browser(), etc.).
+    // This prevents stale Ctrl+C signals from interrupting the next input read.
+    clear_r_interrupt_pending();
 
     // Safety net: if a previous password read (via rpassword) was interrupted
     // by longjmp (SIGINT), the terminal settings snapshot stored in
@@ -2130,6 +2154,43 @@ pub fn polled_events_for_repl() {
         // Even if no events are pending, call R_ProcessEvents occasionally
         // to handle R's internal housekeeping
         process_r_events();
+    }
+}
+
+/// Set R's interrupt pending flag to request computation interruption.
+///
+/// This is async-signal-safe: only performs an atomic load and a volatile write.
+/// On Unix, sets `R_interrupts_pending = 1`.
+/// On Windows, sets `UserBreak = TRUE` (1).
+pub fn set_r_interrupt_pending() {
+    let ptr = R_INTERRUPT_FLAG.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        // SAFETY: ptr points to R's global variable, valid for the process lifetime.
+        // Volatile write is async-signal-safe and prevents compiler elision.
+        unsafe {
+            std::ptr::write_volatile(ptr, 1);
+        }
+    }
+}
+
+/// Returns whether the R interrupt flag pointer is available.
+///
+/// When this returns `false`, [`set_r_interrupt_pending`] is a no-op.
+pub fn is_r_interrupt_flag_available() -> bool {
+    !R_INTERRUPT_FLAG.load(Ordering::Acquire).is_null()
+}
+
+/// Clear R's interrupt pending flag.
+///
+/// Called at the start of every `ReadConsole` invocation (including nested
+/// prompts such as `readline()`, `browser()`, etc.) to prevent stale
+/// interrupt flags from triggering on the next evaluation.
+pub fn clear_r_interrupt_pending() {
+    let ptr = R_INTERRUPT_FLAG.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        unsafe {
+            std::ptr::write_volatile(ptr, 0);
+        }
     }
 }
 
