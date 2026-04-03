@@ -53,7 +53,7 @@ When `--json` is specified, arf prints session connection info to stdout as a si
 ```json
 {
   "pid": 12345,
-  "socket_path": "/home/user/.cache/arf/sessions/12345.sock",
+  "socket_path": "/run/user/1000/arf/12345.sock",
   "r_version": "4.4.1",
   "cwd": "/workspace",
   "started_at": "2026-03-22T10:00:00+09:00",
@@ -238,7 +238,7 @@ The response always has the same shape. When R is busy, the `r` field is `null` 
   "pid": 12345,
   "os": "linux",
   "arch": "x86_64",
-  "socket_path": "/home/user/.cache/arf/sessions/12345.sock",
+  "socket_path": "/run/user/1000/arf/12345.sock",
   "started_at": "2026-03-22T10:00:00+09:00",
   "log_file": null,
   "r": null,
@@ -278,7 +278,7 @@ arf ipc list
 #     {
 #       "pid": 12345,
 #       "r_version": "4.4.1",
-#       "socket_path": "/home/user/.cache/arf/sessions/12345.sock",
+#       "socket_path": "/run/user/1000/arf/12345.sock",
 #       "cwd": "/workspace",
 #       "started_at": "2026-03-22T10:00:00+09:00",
 #       "log_file": null,
@@ -384,15 +384,20 @@ When both a human and an external tool use the same session, arf prevents confli
 
 ### Unix (Linux/macOS)
 
-The IPC server listens on a Unix domain socket. The default path is inside the OS cache directory:
+The IPC server listens on a Unix domain socket. The default path depends on the platform:
 
-- **Linux**: `~/.cache/arf/sessions/<PID>.sock`
-- **macOS**: `~/Library/Caches/arf/sessions/<PID>.sock`
+- When `$XDG_RUNTIME_DIR` is set: `$XDG_RUNTIME_DIR/arf/<PID>.sock` (typically `/run/user/<UID>/arf/<PID>.sock` on Linux with systemd)
+- When `$XDG_RUNTIME_DIR` is not set (e.g. macOS): `<temp_dir>/arf-<random>/<PID>.sock` (where `<temp_dir>` is the system temp directory, e.g. `$TMPDIR`; on Linux this is typically `/tmp`)
 
-The sessions directory, socket file, and session metadata file are all created with restrictive permissions:
-- Directory: mode `0700` (owner only)
+The socket directory and file are created with restrictive permissions:
+- Socket directory: mode `0700` (owner only)
 - Socket file (`<PID>.sock`): mode `0600` (owner only)
-- Session metadata JSON file (`<PID>.json`): mode `0600` (owner only)
+
+Before using the socket directory, arf validates that it is not a symlink, is owned by the current user, and is not writable by group or other users. If validation fails, arf attempts to use a per-process fallback directory instead. If all candidate directories are unsafe or cannot be created, IPC does not start and arf returns an error rather than continuing without IPC.
+
+Session metadata JSON files (`<PID>.json`) are stored separately in the OS cache directory (e.g., `~/.cache/arf/sessions/` on Linux):
+- Directory: mode `0700` (owner only)
+- File: mode `0600` (owner only)
 
 This prevents other users on the system from discovering or connecting to your session.
 
@@ -424,7 +429,7 @@ arf headless --bind \\.\pipe\my-arf
 
 ### Session Discovery
 
-Each arf session with IPC enabled writes a session file to the OS cache directory (e.g., `~/.cache/arf/sessions/<PID>.json` on Linux, `~/Library/Caches/arf/sessions/<PID>.json` on macOS). The `arf ipc` client commands use these files to discover running sessions. Stale session files (where the process is no longer running) are automatically cleaned up.
+Each arf session with IPC enabled writes a session file to the OS cache directory (e.g., `~/.cache/arf/sessions/<PID>.json` on Linux, `~/Library/Caches/arf/sessions/<PID>.json` on macOS). The session file contains the socket path so that `arf ipc` client commands can discover running sessions. Stale session files (where the process is no longer running) are automatically cleaned up.
 
 ### Remote Access (No Built-in TCP)
 
@@ -566,11 +571,11 @@ The socket exists but the server is not responding.
 - The arf process crashed but the socket file was not cleaned up
 - R is stuck in an infinite loop or blocking operation
 
-**Fix:** Check if the process is still running with `arf ipc list`. If the session is stale, remove the socket and session files manually from the cache directory (e.g., `~/.cache/arf/sessions/` on Linux).
+**Fix:** Check if the process is still running with `arf ipc list`. If the session is stale, remove the socket file shown in the `socket_path` field (for example, `$XDG_RUNTIME_DIR/arf/<PID>.sock` or `<temp_dir>/arf-<random>/<PID>.sock` on Unix) and the session metadata file (`~/.cache/arf/sessions/<PID>.json`).
 
 ### Permission denied on socket
 
 On Unix, the socket directory and files are created with restrictive permissions (mode `0700`/`0600`). If you see permission errors:
 
 - Ensure you are connecting as the same user who started arf
-- Check that `~/.cache/arf/sessions/` has the correct ownership
+- Check that the socket directory (`$XDG_RUNTIME_DIR/arf/` or `<temp_dir>/arf-<random>/`) has the correct ownership
