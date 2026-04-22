@@ -1347,6 +1347,10 @@ fn run_script(cli: &Cli) -> Result<()> {
         arf_libr::initialize_r_with_args(&r_args_refs).context("Failed to initialize R")?;
     }
 
+    // Source R profile files (Windows only)
+    #[cfg(windows)]
+    source_r_profiles(&r_args);
+
     // Get the code to execute
     let code = if let Some(eval_code) = &cli.eval {
         eval_code.clone()
@@ -1590,6 +1594,15 @@ fn source_r_profiles(r_args: &[String]) {
     } else {
         log::trace!("Skipping user R profile (--no-init-file or --vanilla)");
     }
+
+    // Call .First() then .First.sys() to match R's documented startup sequence
+    // (see `?Startup`). After profiles are loaded:
+    //   1. .First()     — user hook defined in .Rprofile (e.g. vscode-R session watcher)
+    //   2. .First.sys() — base package hook that loads default packages (utils, grDevices, ...)
+    // On Windows we source profiles manually (profiles disabled in setup_Rmainloop for
+    // globalCallingHandlers compatibility), so we must call these hooks manually too.
+    arf_harp::call_dot_first();
+    arf_harp::call_dot_first_sys();
 }
 
 /// Generate a history session ID when history is enabled and a history directory
