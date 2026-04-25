@@ -37,12 +37,19 @@ jobs:
             --check
 
   cargo-clippy:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
       - name: Run cargo clippy
+        shell: bash
         run: |
           rustup component add clippy
           cargo clippy \
