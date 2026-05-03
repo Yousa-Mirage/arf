@@ -3,9 +3,27 @@
 //! Each arf process with IPC enabled writes a session file to
 //! `~/.cache/arf/sessions/<pid>.json` so that clients can discover
 //! running sessions and their socket paths.
+//!
+//! Set `ARF_IPC_SESSIONS_DIR` to override the sessions directory for both
+//! writers and readers. This is useful for hermetic tests and explicit
+//! multi-instance isolation.
+//!
+//! # `ARF_IPC_SESSIONS_DIR` usage notes
+//!
+//! - **Use an absolute path.** Relative paths are resolved against each
+//!   process's current working directory; if the writer and reader start
+//!   from different directories they will silently look in different
+//!   locations.
+//! - **Use a user-private directory.** The default (`~/.cache/arf/sessions`)
+//!   is created with mode 0700. When overriding to an already-existing
+//!   directory (e.g. `/tmp/my-dir`), ensure it is not world-accessible;
+//!   although session files are created with mode 0600, their filenames
+//!   (which reveal PIDs) would be visible to other users.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+const ARF_IPC_SESSIONS_DIR: &str = "ARF_IPC_SESSIONS_DIR";
 
 /// Session metadata written to disk for client discovery.
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,6 +45,12 @@ pub struct SessionInfo {
 
 /// Return the directory where session files are stored.
 pub fn sessions_dir() -> Option<PathBuf> {
+    if let Some(override_dir) = std::env::var_os(ARF_IPC_SESSIONS_DIR) {
+        let path = PathBuf::from(override_dir);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
     dirs::cache_dir().map(|d| d.join("arf").join("sessions"))
 }
 
