@@ -60,6 +60,14 @@ Pre-built binaries are available from [GitHub Releases](https://github.com/eitsu
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/eitsupi/arf/releases/latest/download/arf-console-installer.sh | sh
 ```
 
+### AUR (Arch Linux/Manjaro)
+
+```sh
+yay -S arf-bin
+# or use paru
+paru -S arf-bin
+```
+
 ### winget (Windows)
 
 ```sh
